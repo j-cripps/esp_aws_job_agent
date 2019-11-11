@@ -104,23 +104,23 @@ const int UPDATE_FAILED_BIT = BIT8;         /**< Software update failed flag */
  *          - s3 root cert for connecting to AWS S3
  */
 extern const uint8_t aws_root_ca_pem_start[] asm("_binary_aws_root_ca_pem_start");
-extern const uint8_t aws_root_ca_pem_end[] asm("_binary_aws_root_ca_pem_end");
+//extern const uint8_t aws_root_ca_pem_end[] asm("_binary_aws_root_ca_pem_end");
 extern const uint8_t certificate_pem_crt_start[] asm("_binary_certificate_pem_crt_start");
-extern const uint8_t certificate_pem_crt_end[] asm("_binary_certificate_pem_crt_end");
+//extern const uint8_t certificate_pem_crt_end[] asm("_binary_certificate_pem_crt_end");
 extern const uint8_t private_pem_key_start[] asm("_binary_private_pem_key_start");
-extern const uint8_t private_pem_key_end[] asm("_binary_private_pem_key_end");
+//extern const uint8_t private_pem_key_end[] asm("_binary_private_pem_key_end");
 extern const uint8_t s3_root_cert_start[] asm("_binary_s3_root_cert_pem_start");
-extern const uint8_t s3_root_cert_end[] asm("_binary_s3_root_cert_pem_end");
+//extern const uint8_t s3_root_cert_end[] asm("_binary_s3_root_cert_pem_end");
 
 /**
  * @brief   Default MQTT HOST URL is pulled from the aws_iot_config.h
  */
-char HostAddress[255] = AWS_IOT_MQTT_HOST;
+static const char HostAddress[255] = AWS_IOT_MQTT_HOST;
 
 /**
  * @brief   Default MQTT port is pulled from the aws_iot_config.h
  */
-uint32_t port = AWS_IOT_MQTT_PORT;
+static const uint32_t port = AWS_IOT_MQTT_PORT;
 
 /* AWS Client Information */
 static AWS_IoT_Client client;
@@ -128,17 +128,17 @@ static IoT_Client_Init_Params mqttInitParams;
 static IoT_Client_Connect_Params connectParams;
 static IoT_Publish_Message_Params paramsQOS0;
 
-/* AWS test variables */
-char testPayload[32];
-const char *TEST_TOPIC = "test_topic/esp32";
-const uint8_t TEST_TOPIC_LEN = strlen("test_topic/esp32");
-int32_t testVar = 0;
+//* AWS test variables */
+//char testPayload[32];
+//const char *TEST_TOPIC = "test_topic/esp32";
+//const uint8_t TEST_TOPIC_LEN = strlen("test_topic/esp32");
+//int32_t testVar = 0;
 
 /* AWS Topic and Storage Buffers */
 static char getRejectedSubBuf[128];
 static char getAcceptedSubBuf[128];
 static char getJobAcceptedSubBuf[128];
-static char getJobUpdateSubBuf[128];
+//static char getJobUpdateSubBuf[128];
 static char getJobUpdateAcceptedSubBuf[128];
 static char getJobUpdateRejectedSubBuf[128];
 static char tempJobBuf[128];
