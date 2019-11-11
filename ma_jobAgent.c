@@ -115,7 +115,7 @@ extern const uint8_t s3_root_cert_start[] asm("_binary_s3_root_cert_pem_start");
 /**
  * @brief   Default MQTT HOST URL is pulled from the aws_iot_config.h
  */
-static const char HostAddress[255] = AWS_IOT_MQTT_HOST;
+static char HostAddress[255] = AWS_IOT_MQTT_HOST;
 
 /**
  * @brief   Default MQTT port is pulled from the aws_iot_config.h
@@ -1028,7 +1028,6 @@ static void connectToAWS(void)
 	}
 
     paramsQOS0.qos = QOS0;
-    paramsQOS0.payload = (void *) testPayload;
     paramsQOS0.isRetained = 0;
 
     /* Create and subscribe to job topics */
