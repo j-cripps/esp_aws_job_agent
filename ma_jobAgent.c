@@ -971,7 +971,7 @@ static void connectToAWS(void)
     mqttInitParams.pDevicePrivateKeyLocation = (const char *)private_pem_key_start;
 
     mqttInitParams.mqttCommandTimeout_ms = 30000;
-    mqttInitParams.tlsHandshakeTimeout_ms = 5000;
+    mqttInitParams.tlsHandshakeTimeout_ms = 20000;
     mqttInitParams.isSSLHostnameVerify = true;
     mqttInitParams.disconnectHandler = disconnectCallbackHandler;
     mqttInitParams.disconnectHandlerData = NULL;
@@ -988,8 +988,8 @@ static void connectToAWS(void)
     connectParams.isCleanSession = true;
     connectParams.MQTTVersion = MQTT_3_1_1;
     /* Client ID is set in the menuconfig of the example */
-    connectParams.pClientID = CONFIG_AWS_EXAMPLE_CLIENT_ID;
-    connectParams.clientIDLen = (uint16_t) strlen(CONFIG_AWS_EXAMPLE_CLIENT_ID);
+    connectParams.pClientID = THING_NAME;
+    connectParams.clientIDLen = (uint16_t) strlen(THING_NAME);
     connectParams.isWillMsgPresent = false;
 
     ESP_LOGI(TAG, "Connecting to AWS...");
