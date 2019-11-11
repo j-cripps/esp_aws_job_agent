@@ -1234,7 +1234,7 @@ void job_agent_task(void *param)
     taskEventGroup = xEventGroupCreate();
 
 	bootValidityCheck();
-	ESP_ERROR_CHECK(nvsBootCheck());
+	// ESP_ERROR_CHECK(nvsBootCheck());
 	otaBootCheck();
 
 	initialiseWifi();
