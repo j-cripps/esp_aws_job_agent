@@ -20,15 +20,10 @@
 #include <limits.h>
 #include <string.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_log.h"
 
 #include "esp_wifi.h"
-#include "esp_event.h"
-#include "esp_event_loop.h"
 #include "driver/gpio.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
@@ -81,22 +76,17 @@ static const char *TAG = "ma_JobAgent"; /**< ESP-IDF logging file name */
 
 const char *THING_NAME = "ESP32TestThing";  /**< The unique name of this unit, used by AWS, temporarily here but should be stored in flash at unit production time */
 
-/**
- * @brief   Event group to signal when we are connected & ready to make a request
- */
-EventGroupHandle_t taskEventGroup;
+/* Private Event Group Bits
+ * -------------------------------------------------------------------------- */
 
-const int WIFI_PROVISIONED_BIT = BIT0;      /**< Whether the task has been provided with WiFi credentials */
-const int WIFI_CONNECTED_BIT = BIT1;        /**< Whether WiFi stack is connected */
-const int RESTART_REQUESTED_BIT = BIT2;     /**< Whether task requests restart of unit (usually after successful OTA update) */
-const int WORK_COMPLETED_BIT = BIT3;        /**< Task completed all work so can be stopped */
-const int JOB_READY_BIT = BIT4;             /**< Whether job ready to be processed */
-const int JOB_PROCESSING_BIT = BIT5;        /**< Whether an AWS job is currently being processed */
-const int JOB_COMPLETED_BIT = BIT6;         /**< AWS job stage completed flag */
-const int JOB_FAILED_BIT = BIT7;            /**< Generic job failed flag */
-const int UPDATE_FAILED_BIT = BIT8;         /**< Software update failed flag */
+static const int JOB_READY_BIT = BIT6;          /**< Whether job ready to be processed */
+static const int JOB_PROCESSING_BIT = BIT7;     /**< Whether an AWS job is currently being processed */
+static const int JOB_COMPLETED_BIT = BIT8;      /**< AWS job stage completed flag */
+static const int JOB_FAILED_BIT = BIT9;         /**< Generic job failed flag */
+static const int RESTART_REQUESTED_BIT = BIT10; /**< Internal restart request bit, so no jobs progress post restart */
+//static const int UPDATE_FAILED_BIT = BIT11; /**< Software update failed flag */
 
-
+/* -------------------------------------------------------------------------- */
 /**
  * @brief   - CA Root certificate
  *          - device ("Thing") certificate
@@ -154,7 +144,8 @@ static jsmntok_t jTokens[128];
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
 /**
- * @brief   Function when an unrecoverable error has occurred. Task must be terminated at this point
+ * @brief   Function when an unrecoverable error has occurred. Task must be terminated at this point.
+ *          - Sets WORK_COMPLETED_BIT so main app can choose to end function as it has reached a non-returnable point
  */
 static void taskFatalError(void);
 
@@ -306,6 +297,9 @@ static void unsubAndDisconnnectAWS(void);
  * -------------------------------------------------------------------------- */
 static void taskFatalError(void)
 {
+    /* Set work completed bit here to signify that the task can do no other work and must be ended/restarted */
+    xEventGroupSetBits(jobAgentEventGroup, WORK_COMPLETED_BIT);
+
     while (1)
     {
         ESP_LOGE(TAG, "Fatal error in task, no return");
@@ -327,7 +321,7 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
 //        if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY)
 //        {
 //            esp_wifi_connect();
-//            xEventGroupClearBits(taskEventGroup, WIFI_CONNECTED_BIT);
+//            xEventGroupClearBits(jobAgentEventGroup, WIFI_CONNECTED_BIT);
 //            s_retry_num++;
 //            ESP_LOGI(TAG, "retry to connect to the AP");
 //        }
@@ -338,7 +332,7 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "got ip:%s", ip4addr_ntoa(&event->ip_info.ip));
 //        s_retry_num = 0;
-        xEventGroupSetBits(taskEventGroup, WIFI_CONNECTED_BIT);
+        xEventGroupSetBits(jobAgentEventGroup, WIFI_CONNECTED_BIT);
     }
 }
 
@@ -584,7 +578,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
-			    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
+			    xEventGroupSetBits(jobAgentEventGroup, JOB_PROCESSING_BIT);
 
 				ret = extractJsonTokenAsString(inProgressToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
@@ -650,7 +644,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
-			    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
+			    xEventGroupSetBits(jobAgentEventGroup, JOB_PROCESSING_BIT);
 
 				ret = extractJsonTokenAsString(queuedToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
@@ -763,8 +757,21 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		}
 		// ESP_LOGI(TAG, "Job Doc: %s", currentJob.jobDoc);
 
+		/* Find special case of OTA update where we need to notify main app and get confirmation before proceeding */
+		jsmntok_t *jobTypeToken = findToken("operation", params->payload, jobDocToken);
+		ret = extractJsonTokenAsString(jobTypeToken, params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+		if (!ret)
+		{
+		    ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+            taskFatalError();
+		}
+		if ((strcmp("ota", tempStringBuf) == 0) && !currentJob.inProgress)
+        {
+		    xEventGroupSetBits(jobAgentEventGroup, JOB_OTA_REQUEST_BIT);
+        }
+
 		/* Since a job has been found, set JOB_READY_BIT */
-        xEventGroupSetBits(taskEventGroup, JOB_READY_BIT);
+        xEventGroupSetBits(jobAgentEventGroup, JOB_READY_BIT);
 	}
 }
 
@@ -780,7 +787,7 @@ void awsProcessJob(void)
 {
     bool ret = false;
 
-    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
+    xEventGroupSetBits(jobAgentEventGroup, JOB_PROCESSING_BIT);
 
     jsmn_init(&jParser);
     int r = jsmn_parse(&jParser, currentJob.jobDoc, COUNT_OF(currentJob.jobDoc), jTokens, COUNT_OF(jTokens));
@@ -840,7 +847,7 @@ void awsProcessJob(void)
                 {
                     /* App versions match as expected so can mark job as complete */
                     ESP_LOGI(TAG, "App version matches job version, OTA job complete");
-                    xEventGroupSetBits(taskEventGroup, JOB_COMPLETED_BIT);
+                    xEventGroupSetBits(jobAgentEventGroup, JOB_COMPLETED_BIT);
                 }
                 else
                 {
@@ -849,7 +856,7 @@ void awsProcessJob(void)
                     ESP_LOGW(TAG, "Current FW: %s\tappVersion: %s", currentAppInfo.version, appVersionBuf);
                     snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg),
                              "Current FW version does not match version specified in OTA job");
-                    xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+                    xEventGroupSetBits(jobAgentEventGroup, JOB_FAILED_BIT);
                 }
             }
             else
@@ -857,7 +864,7 @@ void awsProcessJob(void)
                 ESP_LOGW(TAG, "Cannot check if OTA update is valid, unable to obtain current FW version");
                 snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg),
                          "Cannot check if OTA update is valid, unable to obtain current FW version");
-                xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+                xEventGroupSetBits(jobAgentEventGroup, JOB_FAILED_BIT);
             }
         }
         else
@@ -886,7 +893,7 @@ void awsProcessJob(void)
             if (otaErr != MA_OTA_SUCCESS)
             {
                 ESP_LOGE(TAG, "HTTPS OTA update failed: %d", otaErr);
-                xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+                xEventGroupSetBits(jobAgentEventGroup, JOB_FAILED_BIT);
 
                 switch (otaErr)
                 {
@@ -924,7 +931,7 @@ void awsProcessJob(void)
             else
             {
                 ESP_LOGI(TAG, "HTTPS OTA update successful, request restart");
-                xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
+                xEventGroupSetBits(jobAgentEventGroup, RESTART_REQUESTED_BIT);
             }
         }
     }
@@ -935,13 +942,13 @@ void awsProcessJob(void)
     else if (strcmp(tempStringBuf, "restart") == 0)
     {
         ESP_LOGI(TAG, "Requesting restart");
-        xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
+        xEventGroupSetBits(jobAgentEventGroup, RESTART_REQUESTED_BIT);
     }
     else
     {
         ESP_LOGE(TAG, "Job operation type not found: %s", tempStringBuf);
         snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Job operation not found");
-        xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+        xEventGroupSetBits(jobAgentEventGroup, JOB_FAILED_BIT);
     }
 }
 
@@ -949,17 +956,17 @@ void awsProcessJob(void)
 static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                     IoT_Publish_Message_Params *params, void *pData)
 {
-    ESP_LOGI(TAG, "JOB_UPDATE_TOPIC / accepted callback");
-    ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
-    ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
+    ESP_LOGD(TAG, "JOB_UPDATE_TOPIC / accepted callback");
+    ESP_LOGD(TAG, "topic: %.*s", topicNameLen, topicName);
+    ESP_LOGD(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
 }
 
 static void awsUpdateRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                     IoT_Publish_Message_Params *params, void *pData)
 {
-    ESP_LOGI(TAG, "JOB_UPDATE_TOPIC / rejected callback");
-    ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
-    ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
+    ESP_LOGW(TAG, "JOB_UPDATE_TOPIC / rejected callback");
+    ESP_LOGW(TAG, "topic: %.*s", topicNameLen, topicName);
+    ESP_LOGW(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
 
     /* Do error handling here for when the update was rejected */
 }
@@ -1090,27 +1097,61 @@ static void connectToAWS(void)
             continue;
         }
 
+        ESP_LOGI(TAG, "Event Group Value: %x", xEventGroupGetBits(jobAgentEventGroup));
+
         /* If a restart is requested, unsub and then restart */
-        if ((xEventGroupGetBits(taskEventGroup) & RESTART_REQUESTED_BIT) != 0)
+        if ((xEventGroupGetBits(jobAgentEventGroup) & RESTART_REQUESTED_BIT) != 0)
         {
             ESP_LOGI(TAG, "RESTART_REQUESTED_BIT processing");
+
+            /* Be polite and unsub disconnect from AWS before a shutdown, nothing else to do so loop endlessly */
             unsubAndDisconnnectAWS();
             vTaskDelay(1000 / portTICK_PERIOD_MS);
-            esp_restart();
+
+            /* Also stop and de-initialise WiFi */
+            esp_wifi_stop();
+            esp_wifi_deinit();
+
+            xEventGroupSetBits(jobAgentEventGroup, JOB_OTA_RESTART_BIT);
+            while (1)
+            {
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+            }
         }
 
         /* Only query for more jobs if not currently processing a job */
-        if ((xEventGroupGetBits(taskEventGroup) & JOB_PROCESSING_BIT) == 0)
+        if ((xEventGroupGetBits(jobAgentEventGroup) & JOB_PROCESSING_BIT) == 0)
         {
             ESP_LOGI(TAG, "AWS_QUERY processing");
             rc = aws_iot_jobs_send_query(&client, QOS0, THING_NAME, NULL, NULL, tempJobBuf, COUNT_OF(tempJobBuf),
                                          NULL, 0, JOB_GET_PENDING_TOPIC);
         }
 
-        /* We can process a job locally if a job is ready from AWS */
-        if ((xEventGroupGetBits(taskEventGroup) & JOB_READY_BIT) != 0)
+        /* We can process a job locally if a job is ready from AWS and a restart is not requested*/
+        if (((xEventGroupGetBits(jobAgentEventGroup) & JOB_READY_BIT) != 0) &&
+            ((xEventGroupGetBits(jobAgentEventGroup) & RESTART_REQUESTED_BIT) == 0)  )
         {
             ESP_LOGI(TAG, "JOB_READY_BIT processing");
+
+            /* Only process an OTA job if the main app flags as ready */
+
+            if (((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_REQUEST_BIT) != 0) &&
+                ((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_REPLY_BIT) == 0))
+            {
+                /* Do not process job if an OTA job and the main app has not replied */
+                ESP_LOGI(TAG, "OTA job requested, main app not replied");
+                continue;
+            }
+
+            if (((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_REQUEST_BIT) != 0) &&
+                ((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_REPLY_BIT) != 0))
+            {
+                /* About to proceed with an OTA job as main app confirmed ready, so clear previous flags and
+                 * resume as normal job
+                 */
+                ESP_LOGI(TAG, "OTA job requested, request confirmed");
+                xEventGroupClearBits(jobAgentEventGroup, JOB_OTA_REPLY_BIT | JOB_OTA_REQUEST_BIT);
+            }
 
             if (!currentJob.inProgress)
             {
@@ -1122,7 +1163,8 @@ static void connectToAWS(void)
                 updateRequest.expectedVersion = 0;
                 updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
                 updateRequest.statusDetails = NULL;
-                rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
+                rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest,
+                                              tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
                 if (rc != SUCCESS)
                 {
                     ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
@@ -1136,7 +1178,7 @@ static void connectToAWS(void)
         }
 
         /* We can notify AWS as job completed once verified complete */
-        if ((xEventGroupGetBits(taskEventGroup) & JOB_COMPLETED_BIT) != 0)
+        if ((xEventGroupGetBits(jobAgentEventGroup) & JOB_COMPLETED_BIT) != 0)
         {
             ESP_LOGI(TAG, "JOB_COMPLETED_BIT processing");
 
@@ -1157,11 +1199,11 @@ static void connectToAWS(void)
             }
 
             /* Reset all in job in completion flags to continue processing other jobs */
-            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
+            xEventGroupClearBits(jobAgentEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
         }
 
         /* Notify AWS if current job failed */
-        if ((xEventGroupGetBits(taskEventGroup) & JOB_FAILED_BIT) != 0)
+        if ((xEventGroupGetBits(jobAgentEventGroup) & JOB_FAILED_BIT) != 0)
         {
             ESP_LOGW(TAG, "JOB_FAILED_BIT processing");
 
@@ -1190,14 +1232,11 @@ static void connectToAWS(void)
             }
 
             /* Reset all in job in completion flags to continue processing other jobs */
-            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT | JOB_FAILED_BIT);
+            xEventGroupClearBits(jobAgentEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT | JOB_FAILED_BIT);
         }
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
     }
-
-    /* If the while loop exits unintentionally then try and unsub and disconnect before exiting */
-    unsubAndDisconnnectAWS();
 }
 
 
@@ -1218,8 +1257,7 @@ static void unsubAndDisconnnectAWS(void)
 
     if (rc != SUCCESS)
     {
-        ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
-        taskFatalError();
+        ESP_LOGW(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
     }
     else
     {
@@ -1230,8 +1268,7 @@ static void unsubAndDisconnnectAWS(void)
     rc = aws_iot_mqtt_disconnect(&client);
     if (rc != SUCCESS)
     {
-        ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
-        taskFatalError();
+        ESP_LOGW(TAG, "Unable to disconnect from AWS: %d", rc);
     }
     else
     {
@@ -1242,8 +1279,6 @@ static void unsubAndDisconnnectAWS(void)
 
 void job_agent_task(void *param)
 {
-    taskEventGroup = xEventGroupCreate();
-
 	bootValidityCheck();
 	// ESP_ERROR_CHECK(nvsBootCheck());
 	otaBootCheck();
@@ -1265,7 +1300,7 @@ void job_agent_task(void *param)
 		}
 
 		/* Check if WiFi connected */
-		EventBits_t ret_bit = xEventGroupWaitBits(taskEventGroup, WIFI_CONNECTED_BIT, false, true, 50 / portTICK_PERIOD_MS);
+		EventBits_t ret_bit = xEventGroupWaitBits(jobAgentEventGroup, WIFI_CONNECTED_BIT, false, true, 50 / portTICK_PERIOD_MS);
 		if ((ret_bit & WIFI_CONNECTED_BIT) != 0)
 		{
 			ESP_LOGI(TAG, "WiFi connected");
