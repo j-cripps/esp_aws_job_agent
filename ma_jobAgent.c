@@ -4,7 +4,7 @@
  * @brief Interacts with the AWS Jobs API to pull any relevant jobs for this Thing,
  * parse them and execute the job.
  *
- * @author Jack Cripps // jackc@monitoraudio.com
+ * @author Jack Cripps
  * @date 11/09/2019
  */
 

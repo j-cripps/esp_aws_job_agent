@@ -4,7 +4,7 @@
  * @brief Interacts with the AWS Jobs API to pull any relevant jobs for this Thing, parse them and store the job with any relevant info
  * inside a struct that needs to be dealt with by the rest of the application
  *
- * @author Jack Cripps // jackc@monitoraudio.com
+ * @author Jack Cripps
  * @date 11/09/2019
  */
 

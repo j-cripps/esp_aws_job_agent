@@ -5,7 +5,7 @@
  *
  * @note    Based on the 'advanced_https_ota_example' in ESP-IDF release/v4.0
  *
- * @author  Jack Cripps // jackc@monitoraudio.com
+ * @author  Jack Cripps
  * @date    25/10/2019
  */
 

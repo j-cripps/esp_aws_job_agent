@@ -3,7 +3,7 @@
  *
  * @brief Contains functions relating to the OTA (over-the-air) update feature
  *
- * @author Jack Cripps // jackc@monitoraudio.com
+ * @author Jack Cripps
  * @date 25/10/2019
  */
 
